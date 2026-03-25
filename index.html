@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <title>i-Jati 1.5.24 - Keyword Highlighted</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+        
+        /* 控制面板 */
+        #status-bar {
+            position: absolute; top: 20px; left: 20px; z-index: 1000;
+            background: rgba(15, 15, 15, 0.92); border: 1px solid #cca43b;
+            border-radius: 12px; color: #fff; width: 280px; padding: 15px;
+            box-shadow: 0 4px 25px rgba(0,0,0,0.8);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        #status-bar.minimized { width: 44px; height: 44px; padding: 0; overflow: hidden; border-radius: 50%; }
+        #status-content { transition: opacity 0.2s; }
+        #status-bar.minimized #status-content { opacity: 0; pointer-events: none; }
+        .ctrl-group { display: flex; margin-bottom: 12px; }
+        .btn-ctrl { 
+            flex: 1; background: transparent; border: 1px solid #cca43b; 
+            color: #cca43b; padding: 10px; border-radius: 6px; cursor: pointer;
+            font-size: 13px; font-weight: bold; transition: 0.2s;
+            letter-spacing: 1px;
+        }
+        .btn-ctrl:hover { background: #cca43b; color: #000; }
+        #toggle-min { position: absolute; right: 12px; top: 12px; cursor: pointer; color: #cca43b; font-size: 20px; font-weight: bold; line-height: 1; z-index: 1001; }
+
+        /* 資訊面板 (大字體 + 高盒子) */
+        #info-panel {
+            position: absolute; bottom: 50px; left: 50%;
+            transform: translateX(-50%) translateY(30px);
+            width: 70%; max-width: 800px;
+            background: rgba(15, 15, 15, 0.95); border: 1px solid #cca43b;
+            border-radius: 18px; padding: 40px 35px; /* 進一步加大 Padding 以容納大字體 */
+            text-align: center; color: #fff;
+            opacity: 0; pointer-events: none;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1);
+            backdrop-filter: blur(15px);
+        }
+        #info-panel.active { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+        #info-title { margin: 0 0 15px 0; color: #cca43b; font-size: 38px; font-weight: bold; }
+        #info-desc { margin: 0; font-size: 24px; line-height: 1.6; color: #eee; }
+        
+        /* 關鍵字樣式 */
+        .highlight { color: #cca43b; font-weight: bold; border-bottom: 1px solid rgba(204, 164, 59, 0.3); }
+
+        #min-icon { display: none; width: 100%; height: 100%; text-align: center; line-height: 44px; cursor: pointer; font-size: 22px; }
+    </style>
+</head>
+<body>
+
+<div id="status-bar">
+    <div id="toggle-min" onclick="toggleMinimize()">−</div>
+    <div id="status-content">
+        <b style="color:#cca43b; font-size: 16px;">国徽</b>
+        <hr style="border: 0.5px solid #333; margin: 10px 0;">
+        <div class="ctrl-group"><button class="btn-ctrl" onclick="toggleFullScreen()">全屏模式</button></div>
+        <div style="font-size: 13px; line-height: 1.8; color: #ddd;">
+            🤏 <b>捏合</b>: 选择<br>
+            🖐️ <b>张开</b>: 展开<br>
+            ✊ <b>握拳</b>: 汇聚
+        </div>
+        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Keyword Highlighted</div>
+    </div>
+    <div id="min-icon" onclick="toggleMinimize()">⚙️</div>
+</div>
+
+<div id="info-panel">
+    <h2 id="info-title">Tajuk</h2>
+    <p id="info-desc">Huraian Maklumat</p>
+</div>
+
+<div id="container"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<script>
+    let scene, camera, renderer, particles, particleMeta = [];
+    let cursor, currentState = 'IDLE', selectedGroupId = -1, hoveredGroupId = -1;
+    let morphFactor = 0, selectFactor = 0;
+    let groupCenters = {}; 
+
+    function toggleFullScreen() {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else if (document.exitFullscreen) document.exitFullscreen();
+    }
+
+    function toggleMinimize() {
+        const bar = document.getElementById('status-bar');
+        const content = document.getElementById('status-content');
+        const icon = document.getElementById('min-icon');
+        const toggleBtn = document.getElementById('toggle-min');
+        if (bar.classList.contains('minimized')) {
+            bar.classList.remove('minimized'); content.style.display = 'block';
+            icon.style.display = 'none'; toggleBtn.style.display = 'block';
+        } else {
+            bar.classList.add('minimized'); content.style.display = 'none';
+            icon.style.display = 'block'; toggleBtn.style.display = 'none';
+        }
+    }
+
+    const JATA_URL = "https://upload.wikimedia.org/wikipedia/commons/2/26/Coat_of_arms_of_Malaysia.svg";
+    
+    const GROUP_NAMES = { 
+        0: "⭐ 星星与月亮", 8: "🟥 马来短剑", 1: "🌳 槟城树", 2: "🌳 马六甲树", 
+        3: "🛡️ 婆罗洲和国花", 4: "🎗️ 格言", 5: "🐅 双虎", 7: "🛡️ 联邦四色" 
+    };
+
+    // 關鍵字已添加 <span class="highlight">
+      const GROUP_DESCS = {
+        0: "14角星代表马来西亚的<span class='highlight'>13个州</span>和<span class='highlight'>联邦直辖区</span>。新月象征我国的联邦宗教是<span class='highlight'>伊斯兰教</span>。",
+        8: "五把马来短剑代表<span class='highlight'>前马来属邦</span>",
+        1: "代表<span class='highlight'>槟城</span>",
+        2: "代表<span class='highlight'>马六甲</span>",
+        3: "代表<span class='highlight'>沙巴</span>，<span class='highlight'>国花</span>和<span class='highlight'>砂拉越</span> 国徽上标志的含义",
+        4: "国家格言：\"<span class='highlight'>团结就是力量</span>\"。",
+        5: "两头老虎象征<span class='highlight'>勇敢</span>",
+        7: "四种颜色代表<span class='highlight'>前马来联邦</span>"
+    };
+
+    function init() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 5000);
+        camera.position.z = 850;
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('container').appendChild(renderer.domElement);
+
+        const cursorGeo = new THREE.RingGeometry(12, 16, 32);
+        cursor = new THREE.Mesh(cursorGeo, new THREE.MeshBasicMaterial({ color: 0xffcc33, transparent: true, opacity: 0 }));
+        scene.add(cursor);
+
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = JATA_URL;
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const size = 512, h = size * (img.height/img.width);
+            canvas.width = size; canvas.height = h;
+            ctx.drawImage(img, 0, 0, size, h);
+            const data = ctx.getImageData(0,0,size,h).data;
+            const pos = [], col = [];
+
+            for(let y=0; y<h; y++){ 
+                for(let x=0; x<size; x++){
+                    let i = (y*size + x)*4;
+                    if(data[i+3] > 180){
+                        let vx = x - size/2, vy = -(y - h/2) - 60; 
+                        pos.push(vx, vy, 0);
+                        const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
+                        col.push(r, g, b);
+                        let dx = vx, dy = vy, gid = 7;
+                        const nx = x/size, ny = y/h;
+                        const isYellow = (data[i] > 160 && data[i+1] > 140 && data[i] > data[i+2]);
+                        
+                        if (isYellow && ny <= 0.30 && nx > 0.38 && nx < 0.62) { dy += 120; gid = 0; } 
+                        else if ((nx >= 0.30 && nx <= 0.70) && (ny > 0.30 && ny <= 0.458)) { dy += 60; gid = 8; }
+                        else if ((nx >= 0.29 && nx <= 0.37) && (ny >= 0.458 && ny <= 0.75)) { dx -= 70; gid = 1; }
+                        else if ((nx >= 0.63 && nx <= 0.71) && (ny >= 0.458 && ny <= 0.75)) { dx += 70; gid = 2; }
+                        else if ((nx >= 0.30 && nx <= 0.70) && (ny >= 0.64 && ny <= 0.88)) { dy -= 60; gid = 3; }
+                        else if (isYellow && ny > 0.65) {
+                            let isRib = (nx > 0.35 && nx < 0.65 && ny > 0.83) || ((nx > 0.22 && nx <= 0.35 || nx >= 0.65 && nx < 0.78) && ny > 0.71) || (nx <= 0.22 || nx >= 0.78) && ny > 0.68;
+                            if (isRib) { dy -= 120; gid = 4; }
+                        }
+                        if (gid === 7 && !(nx >= 0.30 && nx <= 0.70 && ny >= 0.31 && ny <= 0.88)) {
+                            if (nx < 0.5) dx -= 150; else dx += 150; gid = 5; 
+                        }
+                        if(!groupCenters[gid]) groupCenters[gid] = {x:0, y:0, count:0};
+                        groupCenters[gid].x += dx; groupCenters[gid].y += dy; groupCenters[gid].count++;
+                        particleMeta.push({ox:vx, oy:vy, oz:0, dx, dy, gid, isDetail:(x%2!==0||y%2!==0), r, g, b, isYellow});
+                    }
+                }
+            }
+            for(let g in groupCenters) { groupCenters[g].x /= groupCenters[g].count; groupCenters[g].y /= groupCenters[g].count; }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+            particles = new THREE.Points(geo, new THREE.PointsMaterial({size: 2.8, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending}));
+            scene.add(particles);
+            setupGesture();
+        };
+        animate();
+    }
+
+    function updateInfoPanelUI() {
+        const panel = document.getElementById('info-panel');
+        if (currentState === 'SELECTED' && selectedGroupId !== -1) {
+            document.getElementById('info-title').innerText = GROUP_NAMES[selectedGroupId];
+            // 改用 innerHTML 以顯示高亮標籤
+            document.getElementById('info-desc').innerHTML = GROUP_DESCS[selectedGroupId];
+            panel.classList.add('active');
+        } else {
+            panel.classList.remove('active');
+        }
+    }
+
+    function setupGesture() {
+        const video = document.createElement('video');
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+        hands.onResults(res => {
+            if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                const hand = res.multiHandLandmarks[0];
+                const wrist = hand[0], thumbTip = hand[4], indexTip = hand[8];
+                const pinchDist = Math.sqrt(Math.pow(thumbTip.x-indexTip.x,2)+Math.pow(thumbTip.y-indexTip.y,2));
+                let openDist = 0; [8,12,16,20].forEach(idx => { openDist += Math.sqrt(Math.pow(hand[idx].x-wrist.x,2)+Math.pow(hand[idx].y-wrist.y,2)); });
+                const avgOpen = openDist/4;
+                cursor.position.x = -(indexTip.x-0.5)*1100; cursor.position.y = -(indexTip.y-0.5)*800;
+                let needsUpdate = false;
+                if (avgOpen < 0.2) { currentState = 'IDLE'; selectedGroupId = -1; cursor.material.opacity = 0; needsUpdate = true; } 
+                else if (pinchDist < 0.05) { if (currentState === 'EXPLODED' && hoveredGroupId !== -1) { selectedGroupId = hoveredGroupId; currentState = 'SELECTED'; cursor.material.opacity = 0; needsUpdate = true; } } 
+                else if (pinchDist < 0.15) { cursor.material.opacity = 1.0; if (currentState === 'SELECTED') { currentState = 'EXPLODED'; selectedGroupId = -1; needsUpdate = true; } else if (currentState === 'EXPLODED') { let minD = 999999; particleMeta.forEach(m => { let d = Math.pow(m.dx - cursor.position.x, 2) + Math.pow(m.dy - cursor.position.y, 2); if(d < minD) { minD = d; hoveredGroupId = m.gid; } }); } } 
+                else if (avgOpen > 0.35) { currentState = 'EXPLODED'; selectedGroupId = -1; cursor.material.opacity = 0; needsUpdate = true; }
+                if(needsUpdate) updateInfoPanelUI(); 
+            }
+        });
+        new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if(particles){
+            morphFactor += (((currentState === 'EXPLODED' || currentState === 'SELECTED') ? 1 : 0) - morphFactor) * 0.1;
+            selectFactor += ((currentState === 'SELECTED' ? 1 : 0) - selectFactor) * 0.1;
+            const pos = particles.geometry.attributes.position;
+            const col = particles.geometry.attributes.color;
+            for(let i=0; i<particleMeta.length; i++){
+                const m = particleMeta[i];
+                if (m.isDetail && (selectedGroupId === -1 || m.gid !== selectedGroupId || m.gid === 5)) { pos.setXYZ(i, 0, 0, -5000); continue; }
+                if (currentState === 'SELECTED' && selectedGroupId === 5 && selectFactor > 0.5) { if (m.gid === 0 || m.gid === 4 || (m.isYellow && m.gid !== 5)) { pos.setXYZ(i, 0, 0, -5000); continue; } }
+                let brightness = (selectedGroupId !== -1 && m.gid !== selectedGroupId) ? 0.15 : 1.0;
+                col.setXYZ(i, m.r * brightness, m.g * brightness, m.b * brightness);
+                let tx = m.ox + (m.dx - m.ox) * morphFactor, ty = m.oy + (m.dy - m.oy) * morphFactor, tz = 0;
+                if (selectedGroupId !== -1 && m.gid === selectedGroupId) {
+                    const center = groupCenters[selectedGroupId];
+                    let zoom = (m.gid === 5) ? 0.5 : (m.gid === 4 ? 0.8 : 1.4);
+                    tz = 500 * selectFactor;
+                    tx = (m.dx * (1 - selectFactor)) + ((m.dx - center.x) * zoom * selectFactor);
+                    ty = (m.dy * (1 - selectFactor)) + ((m.dy - center.y) * zoom * selectFactor) + (25 * selectFactor); 
+                } else if (selectedGroupId !== -1) { tz = -400 * selectFactor; }
+                pos.setXYZ(i, tx, ty, tz);
+            }
+            pos.needsUpdate = true; col.needsUpdate = true;
+        }
+        renderer.render(scene, camera);
+    }
+    window.onload = init;
+</script>
+</body>
+</html>
