@@ -27,13 +27,13 @@
         .btn-ctrl:hover { background: #cca43b; color: #000; }
         #toggle-min { position: absolute; right: 12px; top: 12px; cursor: pointer; color: #cca43b; font-size: 20px; font-weight: bold; line-height: 1; z-index: 1001; }
 
-        /* 資訊面板 (大字體 + 高盒子) */
+        /* 資訊面板 */
         #info-panel {
             position: absolute; bottom: 50px; left: 50%;
             transform: translateX(-50%) translateY(30px);
             width: 70%; max-width: 800px;
             background: rgba(15, 15, 15, 0.95); border: 1px solid #cca43b;
-            border-radius: 18px; padding: 40px 35px; /* 進一步加大 Padding 以容納大字體 */
+            border-radius: 18px; padding: 40px 35px;
             text-align: center; color: #fff;
             opacity: 0; pointer-events: none;
             transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1);
@@ -48,9 +48,30 @@
         .highlight { color: #cca43b; font-weight: bold; border-bottom: 1px solid rgba(204, 164, 59, 0.3); }
 
         #min-icon { display: none; width: 100%; height: 100%; text-align: center; line-height: 44px; cursor: pointer; font-size: 22px; }
+
+        /* 加载提示 */
+        #loading {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #cca43b;
+            font-size: 28px;
+            z-index: 9999;
+            background: rgba(0,0,0,0.7);
+            padding: 20px 40px;
+            border-radius: 12px;
+            border: 1px solid #cca43b;
+            font-weight: bold;
+            letter-spacing: 2px;
+            transition: opacity 0.5s;
+        }
+        #loading.hidden { opacity: 0; pointer-events: none; }
     </style>
 </head>
 <body>
+
+<!-- 加载提示 -->
+<div id="loading">⏳ 加载国徽...</div>
 
 <div id="status-bar">
     <div id="toggle-min" onclick="toggleMinimize()">−</div>
@@ -63,7 +84,7 @@
             🖐️ <b>张开</b>: 展开<br>
             ✊ <b>握拳</b>: 汇聚
         </div>
-        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Keyword Highlighted</div>
+        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Keyword Highlighted + Click + Smooth</div>
     </div>
     <div id="min-icon" onclick="toggleMinimize()">⚙️</div>
 </div>
@@ -84,6 +105,19 @@
     let cursor, currentState = 'IDLE', selectedGroupId = -1, hoveredGroupId = -1;
     let morphFactor = 0, selectFactor = 0;
     let groupCenters = {}; 
+    // 老虎左右子中心
+    let tigerLeftCenter = {x:0, y:0, count:0};
+    let tigerRightCenter = {x:0, y:0, count:0};
+
+    // 平滑变量（新增）
+    let smoothPinch = 0.0, smoothOpen = 0.0;
+    const SMOOTH_ALPHA = 0.4; // 平滑系数
+
+    // 手势阈值（带滞回）
+    const THRESH_OPEN_HIGH = 0.38;   // 大于此值视为张开
+    const THRESH_OPEN_LOW  = 0.18;   // 小于此值视为握拳
+    const THRESH_PINCH_SELECT = 0.04;  // 捏合触发选择
+    const THRESH_PINCH_HOVER  = 0.15;  // 捏合悬停（接近但不选中）
 
     function toggleFullScreen() {
         if (!document.fullscreenElement) document.documentElement.requestFullscreen();
@@ -111,8 +145,7 @@
         3: "🛡️ 婆罗洲和国花", 4: "🎗️ 格言", 5: "🐅 双虎", 7: "🛡️ 联邦四色" 
     };
 
-    // 關鍵字已添加 <span class="highlight">
-      const GROUP_DESCS = {
+    const GROUP_DESCS = {
         0: "14角星代表马来西亚的<span class='highlight'>13个州</span>和<span class='highlight'>联邦直辖区</span>。新月象征我国的联邦宗教是<span class='highlight'>伊斯兰教</span>。",
         8: "五把马来短剑代表<span class='highlight'>前马来属邦</span>",
         1: "代表<span class='highlight'>槟城</span>",
@@ -139,6 +172,8 @@
         img.crossOrigin = "anonymous";
         img.src = JATA_URL;
         img.onload = () => {
+            document.getElementById('loading').classList.add('hidden');
+
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             const size = 512, h = size * (img.height/img.width);
@@ -146,6 +181,9 @@
             ctx.drawImage(img, 0, 0, size, h);
             const data = ctx.getImageData(0,0,size,h).data;
             const pos = [], col = [];
+
+            tigerLeftCenter = {x:0, y:0, count:0};
+            tigerRightCenter = {x:0, y:0, count:0};
 
             for(let y=0; y<h; y++){ 
                 for(let x=0; x<size; x++){
@@ -173,26 +211,102 @@
                         }
                         if(!groupCenters[gid]) groupCenters[gid] = {x:0, y:0, count:0};
                         groupCenters[gid].x += dx; groupCenters[gid].y += dy; groupCenters[gid].count++;
+                        if (gid === 5) {
+                            if (dx < 0) {
+                                tigerLeftCenter.x += dx;
+                                tigerLeftCenter.y += dy;
+                                tigerLeftCenter.count++;
+                            } else {
+                                tigerRightCenter.x += dx;
+                                tigerRightCenter.y += dy;
+                                tigerRightCenter.count++;
+                            }
+                        }
                         particleMeta.push({ox:vx, oy:vy, oz:0, dx, dy, gid, isDetail:(x%2!==0||y%2!==0), r, g, b, isYellow});
                     }
                 }
             }
             for(let g in groupCenters) { groupCenters[g].x /= groupCenters[g].count; groupCenters[g].y /= groupCenters[g].count; }
+            if (tigerLeftCenter.count > 0) {
+                tigerLeftCenter.x /= tigerLeftCenter.count;
+                tigerLeftCenter.y /= tigerLeftCenter.count;
+            }
+            if (tigerRightCenter.count > 0) {
+                tigerRightCenter.x /= tigerRightCenter.count;
+                tigerRightCenter.y /= tigerRightCenter.count;
+            }
             const geo = new THREE.BufferGeometry();
             geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
             geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
             particles = new THREE.Points(geo, new THREE.PointsMaterial({size: 2.8, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending}));
             scene.add(particles);
             setupGesture();
+
+            window.addEventListener('click', onClickHandler);
         };
         animate();
+    }
+
+    function onClickHandler(event) {
+        if (event.target.closest('#status-bar') || event.target.closest('#info-panel') || event.target.closest('#loading')) return;
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        const mouse = new THREE.Vector2(
+            ((event.clientX - rect.left) / rect.width) * 2 - 1,
+            -((event.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, camera);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+        const intersectPoint = new THREE.Vector3();
+        raycaster.ray.intersectPlane(plane, intersectPoint);
+        if (!intersectPoint) return;
+
+        if (currentState !== 'EXPLODED' && currentState !== 'SELECTED') {
+            currentState = 'EXPLODED';
+            selectedGroupId = -1;
+        }
+
+        let minDist = Infinity;
+        let hitGroupId = -1;
+
+        for (let gid in groupCenters) {
+            const center = groupCenters[gid];
+            let dist;
+            let threshold = 100;
+            if (parseInt(gid) === 5) {
+                const dL = Math.sqrt(Math.pow(intersectPoint.x - tigerLeftCenter.x, 2) + Math.pow(intersectPoint.y - tigerLeftCenter.y, 2));
+                const dR = Math.sqrt(Math.pow(intersectPoint.x - tigerRightCenter.x, 2) + Math.pow(intersectPoint.y - tigerRightCenter.y, 2));
+                dist = Math.min(dL, dR);
+                threshold = 200;
+            } else {
+                const dx = intersectPoint.x - center.x;
+                const dy = intersectPoint.y - center.y;
+                dist = Math.sqrt(dx*dx + dy*dy);
+            }
+            if (dist < threshold && dist < minDist) {
+                minDist = dist;
+                hitGroupId = parseInt(gid);
+            }
+        }
+
+        if (hitGroupId !== -1) {
+            selectedGroupId = hitGroupId;
+            currentState = 'SELECTED';
+            cursor.material.opacity = 0;
+        } else {
+            if (currentState === 'SELECTED') {
+                selectedGroupId = -1;
+                currentState = 'EXPLODED';
+            }
+        }
+        updateInfoPanelUI();
     }
 
     function updateInfoPanelUI() {
         const panel = document.getElementById('info-panel');
         if (currentState === 'SELECTED' && selectedGroupId !== -1) {
             document.getElementById('info-title').innerText = GROUP_NAMES[selectedGroupId];
-            // 改用 innerHTML 以顯示高亮標籤
             document.getElementById('info-desc').innerHTML = GROUP_DESCS[selectedGroupId];
             panel.classList.add('active');
         } else {
@@ -211,13 +325,96 @@
                 const pinchDist = Math.sqrt(Math.pow(thumbTip.x-indexTip.x,2)+Math.pow(thumbTip.y-indexTip.y,2));
                 let openDist = 0; [8,12,16,20].forEach(idx => { openDist += Math.sqrt(Math.pow(hand[idx].x-wrist.x,2)+Math.pow(hand[idx].y-wrist.y,2)); });
                 const avgOpen = openDist/4;
-                cursor.position.x = -(indexTip.x-0.5)*1100; cursor.position.y = -(indexTip.y-0.5)*800;
+
+                // ---- 平滑处理 ----
+                if (smoothPinch === 0) smoothPinch = pinchDist;
+                if (smoothOpen === 0) smoothOpen = avgOpen;
+                smoothPinch = SMOOTH_ALPHA * pinchDist + (1 - SMOOTH_ALPHA) * smoothPinch;
+                smoothOpen  = SMOOTH_ALPHA * avgOpen   + (1 - SMOOTH_ALPHA) * smoothOpen;
+
+                // 更新光标位置（使用原始数据，但平滑会影响状态判断）
+                cursor.position.x = -(indexTip.x-0.5)*1100;
+                cursor.position.y = -(indexTip.y-0.5)*800;
+
                 let needsUpdate = false;
-                if (avgOpen < 0.2) { currentState = 'IDLE'; selectedGroupId = -1; cursor.material.opacity = 0; needsUpdate = true; } 
-                else if (pinchDist < 0.05) { if (currentState === 'EXPLODED' && hoveredGroupId !== -1) { selectedGroupId = hoveredGroupId; currentState = 'SELECTED'; cursor.material.opacity = 0; needsUpdate = true; } } 
-                else if (pinchDist < 0.15) { cursor.material.opacity = 1.0; if (currentState === 'SELECTED') { currentState = 'EXPLODED'; selectedGroupId = -1; needsUpdate = true; } else if (currentState === 'EXPLODED') { let minD = 999999; particleMeta.forEach(m => { let d = Math.pow(m.dx - cursor.position.x, 2) + Math.pow(m.dy - cursor.position.y, 2); if(d < minD) { minD = d; hoveredGroupId = m.gid; } }); } } 
-                else if (avgOpen > 0.35) { currentState = 'EXPLODED'; selectedGroupId = -1; cursor.material.opacity = 0; needsUpdate = true; }
-                if(needsUpdate) updateInfoPanelUI(); 
+
+                // ---- 状态机（带滞回） ----
+                // 1) 判断张开/握拳
+                let gestureType = 'UNKNOWN';
+                if (smoothOpen > THRESH_OPEN_HIGH) gestureType = 'OPEN';
+                else if (smoothOpen < THRESH_OPEN_LOW) gestureType = 'FIST';
+                else gestureType = 'UNKNOWN'; // 中间区域保持当前状态
+
+                // 2) 应用状态切换
+                if (gestureType === 'FIST') {
+                    if (currentState !== 'IDLE') {
+                        currentState = 'IDLE';
+                        selectedGroupId = -1;
+                        cursor.material.opacity = 0;
+                        needsUpdate = true;
+                    }
+                } else if (gestureType === 'OPEN') {
+                    if (currentState !== 'EXPLODED' && currentState !== 'SELECTED') {
+                        currentState = 'EXPLODED';
+                        selectedGroupId = -1;
+                        cursor.material.opacity = 0;
+                        needsUpdate = true;
+                    }
+                } else {
+                    // 中间区域：不改变状态（维持之前）
+                }
+
+                // 3) 捏合逻辑（仅在 EXPLODED 或 SELECTED 状态下工作）
+                if (currentState === 'EXPLODED' || currentState === 'SELECTED') {
+                    if (smoothPinch < THRESH_PINCH_SELECT) {
+                        // 捏合选择
+                        if (currentState === 'EXPLODED' && hoveredGroupId !== -1) {
+                            selectedGroupId = hoveredGroupId;
+                            currentState = 'SELECTED';
+                            cursor.material.opacity = 0;
+                            needsUpdate = true;
+                        } else if (currentState === 'SELECTED') {
+                            // 如果已选中，再次捏合不做切换（防止误取消）
+                        }
+                    } else if (smoothPinch < THRESH_PINCH_HOVER) {
+                        // 悬停状态 (显示光标)
+                        cursor.material.opacity = 1.0;
+                        if (currentState === 'SELECTED') {
+                            // 如果是选中态，稍微松开捏合不会取消选中，但可以切换为展开？
+                            // 我们设计为：在选中态，如果平滑捏合值增大到阈值以上，取消选中并回到展开
+                            // 但为了更自然，我们可以在捏合松开时回到 EXPLODED
+                            // 这里改为：当捏合从 <SELECT 变为 >HOVER 时，取消选中
+                            // 但为了避免误触，我们仅在捏合明显松开时取消选中（通过阈值）
+                            // 更稳健：如果 currentState === SELECTED 且 smoothPinch > THRESH_PINCH_HOVER，
+                            // 我们暂时不改变，等待手势明确为 OPEN 才取消？但这样容易卡住。
+                            // 改为：在选中态下，如果手势变为 FIST 或 OPEN 会触发状态切换，由上面逻辑处理。
+                            // 这里不做额外操作
+                        } else if (currentState === 'EXPLODED') {
+                            // 计算悬停组
+                            let minD = 999999;
+                            particleMeta.forEach(m => {
+                                let d = Math.pow(m.dx - cursor.position.x, 2) + Math.pow(m.dy - cursor.position.y, 2);
+                                if(d < minD) { minD = d; hoveredGroupId = m.gid; }
+                            });
+                        }
+                    } else {
+                        // 捏合完全松开，隐藏光标
+                        cursor.material.opacity = 0;
+                        // 如果当前是 SELECTED 且捏合松开了，我们可以选择取消选中或保持，这里保持选中，除非手势变为 OPEN/FIST
+                    }
+                }
+
+                // 额外：如果当前状态是 SELECTED 且手势变为 OPEN，应取消选中并展开
+                if (currentState === 'SELECTED' && gestureType === 'OPEN') {
+                    currentState = 'EXPLODED';
+                    selectedGroupId = -1;
+                    cursor.material.opacity = 0;
+                    needsUpdate = true;
+                }
+
+                if(needsUpdate) updateInfoPanelUI();
+            } else {
+                // 没有检测到手，保持不变
             }
         });
         new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
@@ -234,8 +431,18 @@
                 const m = particleMeta[i];
                 if (m.isDetail && (selectedGroupId === -1 || m.gid !== selectedGroupId || m.gid === 5)) { pos.setXYZ(i, 0, 0, -5000); continue; }
                 if (currentState === 'SELECTED' && selectedGroupId === 5 && selectFactor > 0.5) { if (m.gid === 0 || m.gid === 4 || (m.isYellow && m.gid !== 5)) { pos.setXYZ(i, 0, 0, -5000); continue; } }
+
+                let hoverBright = 1.0;
+                if (currentState === 'EXPLODED' && hoveredGroupId !== -1 && m.gid === hoveredGroupId) {
+                    hoverBright = 1.4;
+                }
+
                 let brightness = (selectedGroupId !== -1 && m.gid !== selectedGroupId) ? 0.15 : 1.0;
+                brightness *= hoverBright;
+                if (brightness > 1.0) brightness = 1.0;
+
                 col.setXYZ(i, m.r * brightness, m.g * brightness, m.b * brightness);
+
                 let tx = m.ox + (m.dx - m.ox) * morphFactor, ty = m.oy + (m.dy - m.oy) * morphFactor, tz = 0;
                 if (selectedGroupId !== -1 && m.gid === selectedGroupId) {
                     const center = groupCenters[selectedGroupId];
