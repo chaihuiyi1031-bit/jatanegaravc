@@ -84,7 +84,7 @@
             🖐️ <b>张开</b>: 展开<br>
             ✊ <b>握拳</b>: 汇聚
         </div>
-        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Keyword Highlighted + Click + Smooth + Resize</div>
+        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Auto-Resize + All Optimizations</div>
     </div>
     <div id="min-icon" onclick="toggleMinimize()">⚙️</div>
 </div>
@@ -105,7 +105,6 @@
     let cursor, currentState = 'IDLE', selectedGroupId = -1, hoveredGroupId = -1;
     let morphFactor = 0, selectFactor = 0;
     let groupCenters = {}; 
-    // 老虎左右子中心
     let tigerLeftCenter = {x:0, y:0, count:0};
     let tigerRightCenter = {x:0, y:0, count:0};
 
@@ -113,11 +112,15 @@
     let smoothPinch = 0.0, smoothOpen = 0.0;
     const SMOOTH_ALPHA = 0.4;
 
-    // 手势阈值（带滞回）
+    // 手势阈值
     const THRESH_OPEN_HIGH = 0.38;
     const THRESH_OPEN_LOW  = 0.18;
     const THRESH_PINCH_SELECT = 0.04;
     const THRESH_PINCH_HOVER  = 0.15;
+
+    // 自适应相关
+    let maxX = 0, maxY = 0;
+    let sceneWidth = 1, sceneHeight = 1; // 初始值，将在updateCameraDistance中重新计算
 
     function toggleFullScreen() {
         if (!document.fullscreenElement) document.documentElement.requestFullscreen();
@@ -156,10 +159,29 @@
         7: "四种颜色代表<span class='highlight'>前马来联邦</span>"
     };
 
+    // ====== 自适应相机距离 ======
+    function updateCameraDistance() {
+        if (maxX === 0 && maxY === 0) return;
+        const fov = 45 * Math.PI / 180;
+        const aspect = window.innerWidth / window.innerHeight;
+        const margin = 0.9; // 留 10% 边距
+        const halfFov = Math.tan(fov / 2);
+        // 垂直方向所需距离
+        const zVert = maxY / (halfFov * margin);
+        // 水平方向所需距离
+        const zHoriz = maxX / (halfFov * aspect * margin);
+        const z = Math.max(zVert, zHoriz);
+        camera.position.z = z;
+        camera.updateProjectionMatrix();
+        // 计算场景宽高（用于光标映射）
+        sceneWidth = 2 * z * halfFov * aspect;
+        sceneHeight = 2 * z * halfFov;
+    }
+
     function init() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 5000);
-        camera.position.z = 850;
+        camera.position.z = 850; // 初始值，后续会被更新
         renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.getElementById('container').appendChild(renderer.domElement);
@@ -184,6 +206,7 @@
 
             tigerLeftCenter = {x:0, y:0, count:0};
             tigerRightCenter = {x:0, y:0, count:0};
+            maxX = 0; maxY = 0;
 
             for(let y=0; y<h; y++){ 
                 for(let x=0; x<size; x++){
@@ -223,6 +246,11 @@
                             }
                         }
                         particleMeta.push({ox:vx, oy:vy, oz:0, dx, dy, gid, isDetail:(x%2!==0||y%2!==0), r, g, b, isYellow});
+                        // 更新最大范围
+                        const absX = Math.abs(dx);
+                        const absY = Math.abs(dy);
+                        if (absX > maxX) maxX = absX;
+                        if (absY > maxY) maxY = absY;
                     }
                 }
             }
@@ -240,8 +268,11 @@
             geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
             particles = new THREE.Points(geo, new THREE.PointsMaterial({size: 2.8, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending}));
             scene.add(particles);
-            setupGesture();
 
+            // 初次自适应
+            updateCameraDistance();
+
+            setupGesture();
             window.addEventListener('click', onClickHandler);
             window.addEventListener('resize', onWindowResize);
         };
@@ -255,6 +286,7 @@
         renderer.setSize(width, height);
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
+        updateCameraDistance(); // 重新计算相机距离和场景范围
     }
 
     function onClickHandler(event) {
@@ -342,8 +374,9 @@
                 smoothPinch = SMOOTH_ALPHA * pinchDist + (1 - SMOOTH_ALPHA) * smoothPinch;
                 smoothOpen  = SMOOTH_ALPHA * avgOpen   + (1 - SMOOTH_ALPHA) * smoothOpen;
 
-                cursor.position.x = -(indexTip.x-0.5)*1100;
-                cursor.position.y = -(indexTip.y-0.5)*800;
+                // ---- 光标位置根据场景宽高自适应 ----
+                cursor.position.x = (indexTip.x - 0.5) * sceneWidth;
+                cursor.position.y = (indexTip.y - 0.5) * sceneHeight;
 
                 let needsUpdate = false;
 
