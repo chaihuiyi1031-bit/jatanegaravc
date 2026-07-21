@@ -84,7 +84,7 @@
             🖐️ <b>张开</b>: 展开<br>
             ✊ <b>握拳</b>: 汇聚
         </div>
-        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Mirror Fix + Auto-Resize</div>
+        <div style="font-size: 11px; margin-top:8px; color:#666; text-align: center;">V-Final: Keyword Highlighted + Click + Smooth</div>
     </div>
     <div id="min-icon" onclick="toggleMinimize()">⚙️</div>
 </div>
@@ -105,23 +105,19 @@
     let cursor, currentState = 'IDLE', selectedGroupId = -1, hoveredGroupId = -1;
     let morphFactor = 0, selectFactor = 0;
     let groupCenters = {}; 
+    // 老虎左右子中心
     let tigerLeftCenter = {x:0, y:0, count:0};
     let tigerRightCenter = {x:0, y:0, count:0};
 
-    // 平滑变量
+    // 平滑变量（新增）
     let smoothPinch = 0.0, smoothOpen = 0.0;
-    const SMOOTH_ALPHA = 0.4;
+    const SMOOTH_ALPHA = 0.4; // 平滑系数
 
-    // 手势阈值
-    const THRESH_OPEN_HIGH = 0.38;
-    const THRESH_OPEN_LOW  = 0.18;
-    const THRESH_PINCH_SELECT = 0.04;
-    const THRESH_PINCH_HOVER  = 0.15;
-
-    // 自适应相关
-    let maxX = 0, maxY = 0;
-    let sceneWidth = 1, sceneHeight = 1;
-    let mirrorMode = true; // 前置摄像头镜像
+    // 手势阈值（带滞回）
+    const THRESH_OPEN_HIGH = 0.38;   // 大于此值视为张开
+    const THRESH_OPEN_LOW  = 0.18;   // 小于此值视为握拳
+    const THRESH_PINCH_SELECT = 0.04;  // 捏合触发选择
+    const THRESH_PINCH_HOVER  = 0.15;  // 捏合悬停（接近但不选中）
 
     function toggleFullScreen() {
         if (!document.fullscreenElement) document.documentElement.requestFullscreen();
@@ -160,21 +156,6 @@
         7: "四种颜色代表<span class='highlight'>前马来联邦</span>"
     };
 
-    function updateCameraDistance() {
-        if (maxX === 0 && maxY === 0) return;
-        const fov = 45 * Math.PI / 180;
-        const aspect = window.innerWidth / window.innerHeight;
-        const margin = 0.9;
-        const halfFov = Math.tan(fov / 2);
-        const zVert = maxY / (halfFov * margin);
-        const zHoriz = maxX / (halfFov * aspect * margin);
-        const z = Math.max(zVert, zHoriz);
-        camera.position.z = z;
-        camera.updateProjectionMatrix();
-        sceneWidth = 2 * z * halfFov * aspect;
-        sceneHeight = 2 * z * halfFov;
-    }
-
     function init() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 5000);
@@ -203,7 +184,6 @@
 
             tigerLeftCenter = {x:0, y:0, count:0};
             tigerRightCenter = {x:0, y:0, count:0};
-            maxX = 0; maxY = 0;
 
             for(let y=0; y<h; y++){ 
                 for(let x=0; x<size; x++){
@@ -243,10 +223,6 @@
                             }
                         }
                         particleMeta.push({ox:vx, oy:vy, oz:0, dx, dy, gid, isDetail:(x%2!==0||y%2!==0), r, g, b, isYellow});
-                        const absX = Math.abs(dx);
-                        const absY = Math.abs(dy);
-                        if (absX > maxX) maxX = absX;
-                        if (absY > maxY) maxY = absY;
                     }
                 }
             }
@@ -264,22 +240,11 @@
             geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
             particles = new THREE.Points(geo, new THREE.PointsMaterial({size: 2.8, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending}));
             scene.add(particles);
-
-            updateCameraDistance();
             setupGesture();
+
             window.addEventListener('click', onClickHandler);
-            window.addEventListener('resize', onWindowResize);
         };
         animate();
-    }
-
-    function onWindowResize() {
-        const width = window.innerWidth;
-        const height = window.innerHeight;
-        renderer.setSize(width, height);
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
-        updateCameraDistance();
     }
 
     function onClickHandler(event) {
@@ -353,19 +318,6 @@
         const video = document.createElement('video');
         const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
         hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
-
-        // 摄像头初始化，开启镜像（前置摄像头）
-        const cameraOptions = {
-            onFrame: async () => {
-                await hands.send({image: video});
-            },
-            width: 640,
-            height: 480,
-            facingMode: "user",
-            mirror: true // 关键：翻转视频显示
-        };
-        const cam = new Camera(video, cameraOptions);
-
         hands.onResults(res => {
             if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
                 const hand = res.multiHandLandmarks[0];
@@ -374,26 +326,26 @@
                 let openDist = 0; [8,12,16,20].forEach(idx => { openDist += Math.sqrt(Math.pow(hand[idx].x-wrist.x,2)+Math.pow(hand[idx].y-wrist.y,2)); });
                 const avgOpen = openDist/4;
 
-                // 平滑
+                // ---- 平滑处理 ----
                 if (smoothPinch === 0) smoothPinch = pinchDist;
                 if (smoothOpen === 0) smoothOpen = avgOpen;
                 smoothPinch = SMOOTH_ALPHA * pinchDist + (1 - SMOOTH_ALPHA) * smoothPinch;
                 smoothOpen  = SMOOTH_ALPHA * avgOpen   + (1 - SMOOTH_ALPHA) * smoothOpen;
 
-                // ---- 光标位置：镜像则反转X ----
-                let xNorm = indexTip.x;
-                if (mirrorMode) {
-                    xNorm = 1 - xNorm; // 左右翻转
-                }
-                cursor.position.x = (xNorm - 0.5) * sceneWidth;
-                cursor.position.y = (indexTip.y - 0.5) * sceneHeight;
+                // 更新光标位置（使用原始数据，但平滑会影响状态判断）
+                cursor.position.x = -(indexTip.x-0.5)*1100;
+                cursor.position.y = -(indexTip.y-0.5)*800;
 
                 let needsUpdate = false;
 
+                // ---- 状态机（带滞回） ----
+                // 1) 判断张开/握拳
                 let gestureType = 'UNKNOWN';
                 if (smoothOpen > THRESH_OPEN_HIGH) gestureType = 'OPEN';
                 else if (smoothOpen < THRESH_OPEN_LOW) gestureType = 'FIST';
+                else gestureType = 'UNKNOWN'; // 中间区域保持当前状态
 
+                // 2) 应用状态切换
                 if (gestureType === 'FIST') {
                     if (currentState !== 'IDLE') {
                         currentState = 'IDLE';
@@ -408,19 +360,37 @@
                         cursor.material.opacity = 0;
                         needsUpdate = true;
                     }
+                } else {
+                    // 中间区域：不改变状态（维持之前）
                 }
 
+                // 3) 捏合逻辑（仅在 EXPLODED 或 SELECTED 状态下工作）
                 if (currentState === 'EXPLODED' || currentState === 'SELECTED') {
                     if (smoothPinch < THRESH_PINCH_SELECT) {
+                        // 捏合选择
                         if (currentState === 'EXPLODED' && hoveredGroupId !== -1) {
                             selectedGroupId = hoveredGroupId;
                             currentState = 'SELECTED';
                             cursor.material.opacity = 0;
                             needsUpdate = true;
+                        } else if (currentState === 'SELECTED') {
+                            // 如果已选中，再次捏合不做切换（防止误取消）
                         }
                     } else if (smoothPinch < THRESH_PINCH_HOVER) {
+                        // 悬停状态 (显示光标)
                         cursor.material.opacity = 1.0;
-                        if (currentState === 'EXPLODED') {
+                        if (currentState === 'SELECTED') {
+                            // 如果是选中态，稍微松开捏合不会取消选中，但可以切换为展开？
+                            // 我们设计为：在选中态，如果平滑捏合值增大到阈值以上，取消选中并回到展开
+                            // 但为了更自然，我们可以在捏合松开时回到 EXPLODED
+                            // 这里改为：当捏合从 <SELECT 变为 >HOVER 时，取消选中
+                            // 但为了避免误触，我们仅在捏合明显松开时取消选中（通过阈值）
+                            // 更稳健：如果 currentState === SELECTED 且 smoothPinch > THRESH_PINCH_HOVER，
+                            // 我们暂时不改变，等待手势明确为 OPEN 才取消？但这样容易卡住。
+                            // 改为：在选中态下，如果手势变为 FIST 或 OPEN 会触发状态切换，由上面逻辑处理。
+                            // 这里不做额外操作
+                        } else if (currentState === 'EXPLODED') {
+                            // 计算悬停组
                             let minD = 999999;
                             particleMeta.forEach(m => {
                                 let d = Math.pow(m.dx - cursor.position.x, 2) + Math.pow(m.dy - cursor.position.y, 2);
@@ -428,10 +398,13 @@
                             });
                         }
                     } else {
+                        // 捏合完全松开，隐藏光标
                         cursor.material.opacity = 0;
+                        // 如果当前是 SELECTED 且捏合松开了，我们可以选择取消选中或保持，这里保持选中，除非手势变为 OPEN/FIST
                     }
                 }
 
+                // 额外：如果当前状态是 SELECTED 且手势变为 OPEN，应取消选中并展开
                 if (currentState === 'SELECTED' && gestureType === 'OPEN') {
                     currentState = 'EXPLODED';
                     selectedGroupId = -1;
@@ -440,10 +413,11 @@
                 }
 
                 if(needsUpdate) updateInfoPanelUI();
+            } else {
+                // 没有检测到手，保持不变
             }
         });
-
-        cam.start();
+        new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
     }
 
     function animate() {
